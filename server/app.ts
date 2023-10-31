@@ -5,6 +5,7 @@ export const app = express();
 import cors from 'cors'
 import cookieParser from 'cookie-parser';
 import { ErrorMiddleware} from './middlewares/error';
+import userRouter from './routes/user.routes';
 
 
 // The app.use() method is typically used to add middleware at the application level, meaning the middleware will be executed for all routes within the Express application. Here's the basic syntax:
@@ -21,7 +22,7 @@ app.use(cors({
 
 
 
-
+app.use("/api/v1",userRouter);
 
 //testing api - 
 app.get("/test",(req:Request,res:Response)=>{
