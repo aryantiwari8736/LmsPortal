@@ -2,12 +2,14 @@ import { Request, Response, NextFunction } from "express";
 import userModel, { IUser } from "../models/userModel";
 import ErrorHandler from "../utills/Errorhandler";
 import { CatchAsyncError } from "../middlewares/catchAsyncError";
-import jwt, { Secret } from "jsonwebtoken";
+import jwt, { JwtPayload, Secret } from "jsonwebtoken";
 require("dotenv").config();
 import ejs from "ejs";
 import path from "path";
 import sendMail from "../utills/sendMail";
-import { sendToken } from "../utills/jwt";
+import { accesTokenOptions, refreshTokenOptions, sendToken } from "../utills/jwt";
+import { redis } from "../utills/redis";
+import { getUserById } from "../services/user.service";
 //register user ---
 
 //createing an interface --
@@ -93,6 +95,8 @@ export const createActivationToken = (user: any): IActivationToken => {
   return { token, activationCode };
 };
 
+
+
 //activation of user ---
 interface IActivationRequest {
   activation_token: string;
@@ -128,6 +132,8 @@ export const activationUser = CatchAsyncError(
   }
 );
 
+
+
 //Login User  -
 interface ILoginRequest {
   email: string;
@@ -142,7 +148,7 @@ export const loginuUser = CatchAsyncError(
           new ErrorHandler("Please enter the eamil or password", 400)
         );
       }
-      const user = await userModel.findOne({ email }).select("+passwrod");
+      const user = await userModel.findOne({ email }).select("+password");
       if (!user) {
         return next(new ErrorHandler("User does not exist", 400));
       }
@@ -158,19 +164,143 @@ export const loginuUser = CatchAsyncError(
   }
 );
 
-//Logout user ---
 
+
+//Logout user ---
 export const logoutUser = CatchAsyncError(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       res.cookie("access_token", "", { maxAge: 1 });
       res.cookie("refresh_token", "", { maxAge: 1 });
+      redis.del(req.user?._id);
       res.status(200).json({
         success: true,
         message: "Logged out successfully",
       });
     } catch (error) {
+      
       return next(new ErrorHandler(error.message, 400));
     }
   }
 );
+
+
+
+//update access token  -
+export const updateAccessToken = CatchAsyncError(
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const refresh_token = req.cookies.refresh_token as string;
+      const decoded = jwt.verify(
+        refresh_token,
+        process.env.REFRESH_TOKEN as string
+      ) as JwtPayload;
+      const message = "Could not refresh tokn";
+      if (!decoded) {
+        return next(new ErrorHandler(message, 400));
+      }
+      const session = await redis.get(decoded.id as string);
+      if (!session) {
+        return next(new ErrorHandler(message, 400));
+      }
+      const user = JSON.parse(session);
+      const accessToken = jwt.sign(
+        { id: user._id },
+        process.env.ACCESS_TOKEN as string,
+        {
+          expiresIn: "5m",
+        }
+      );
+      const refreshToken = jwt.sign(
+        { id: user._id },
+        process.env.REFRESH_TOKEN as string,
+        { expiresIn: "7d" }
+      );
+      res.cookie("access_token", accessToken,accesTokenOptions);
+      res.cookie("refresh_token", refreshToken,refreshTokenOptions);
+      res.status(200).json({
+        status:"success",
+        accessToken
+
+      })
+    } catch (error) {
+      return next(new ErrorHandler(error.message, 400)); 
+    }
+  }
+);
+
+
+// get user info  
+export const getUserInfo  = CatchAsyncError(async(req:Request,res:Response,next:NextFunction)=>{ 
+
+try {
+  
+const userid = req.user?._id; 
+getUserById(userid,res);
+
+
+} catch (error:any) {
+  return next(new ErrorHandler(error.message, 400)); 
+}
+})
+
+// Social - Authentication -- Implementated from frontend  -- 
+
+interface ISocialAuthBOdy{
+  email:string,
+  name:string,
+  avatar:string
+}
+
+export const socialAuth  = CatchAsyncError(async(req:Request,res:Response,next:NextFunction)=>{
+
+  try {
+    const {email,name,avatar} = req.body;
+    const user  =await userModel.findOne({email});
+    if(!user){
+      const newUser  =await userModel.create( {name,email,avatar});
+      sendToken(newUser,200,res);
+    } 
+    else{
+      sendToken(user,200,res);
+    }
+  } catch (error) {
+    return next(new ErrorHandler(error.message, 400));
+  }
+
+})
+
+
+//update user info  =  
+interface IUpdateUserInfo{
+  name?:string,
+  email?:string
+}
+export const updateUserInfo = CatchAsyncError(async(req:Request,res:Response,next:NextFunction)=>{
+
+try {
+  const {email,name} = req.body as IUpdateUserInfo;
+const userId  = req.user?._id;
+const user  = await userModel.findById(userId);
+if(email && user){
+  const isEmailExist = await userModel.findOne({email});
+  if(isEmailExist){
+    return next(new ErrorHandler("Email already exist",400));
+
+  }
+  user.email = email;
+
+  if(name && user){
+    user.name = name;
+  }
+  await user.save();
+  await redis.set(userId,JSON.stringify(user)); 
+  res.status(200).json({
+    success:true,
+    user
+  })
+}
+} catch (error) {
+  return next(new ErrorHandler(error.message, 400));
+}
+})
